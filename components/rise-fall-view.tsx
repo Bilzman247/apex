@@ -1,65 +1,23 @@
 'use client';
 
-import dynamic from 'next/dynamic';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Localize } from '@deriv-com/translations';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Footer, FooterBar } from '@/components/custom/footer';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Footer } from '@/components/custom/footer';
 import { Header } from '@/components/custom/header';
 import { LoginPromptDialog } from '@/components/custom/login-prompt-dialog';
-import { PinnedBuyBar } from '@/components/custom/pinned-buy-bar';
 import { useAppTranslations } from '@/components/custom/i18n-provider';
 import { SymbolSelector } from '@/components/custom/symbol-selector';
+import { CurrentPriceDisplay } from '@/components/current-price-display';
 import { ThemeToggle } from '@/components/custom/theme-toggle';
-import { Skeleton } from '@/components/ui/skeleton';
-import { useIsMobile } from '@/hooks/use-is-mobile';
-import { useContractMarkers } from '@/hooks/use-contract-markers';
-import { useCallback, useMemo, useState, type CSSProperties } from 'react';
-import { Ban } from 'lucide-react';
-import { TradeControls } from './trade-controls';
-import { ConfigurableTradeControls, ConfigurableBuyButton } from './configurable-trade-controls';
-import type { RiseFallAppConfig } from '../lib/app-config';
+import { toast } from 'sonner';
+import { Bot, Play, Square, Smartphone, ShieldAlert, Activity, Shield } from 'lucide-react';
 
-/**
- * A zone overlaid on the chart region. Two modes:
- *  - not-editable (no onClick): ⛔ "… · not editable" hint on hover.
- *  - selectable (onClick): clickable to select; ring highlights when selected.
- * Either way it blocks direct chart interaction in edit mode.
- */
-function FixedZone({
-  label,
-  style,
-  onClick,
-  selected,
-}: {
-  label: string;
-  style: CSSProperties;
-  onClick?: () => void;
-  selected?: boolean;
-}) {
-  const { localize } = useAppTranslations();
-  const selectable = !!onClick;
-  return (
-    <div
-      className={`group/zone absolute left-0 right-0 z-[60] ${selectable ? 'cursor-pointer' : ''}`}
-      style={style}
-      onClick={onClick}
-    >
-      <div
-        className={[
-          'pointer-events-none absolute inset-0 rounded-md ring-2 ring-inset transition-opacity',
-          selected
-            ? 'opacity-100 ring-primary'
-            : 'opacity-0 ring-muted-foreground/30 group-hover/zone:opacity-100',
-        ].join(' ')}
-      >
-        <span className="absolute left-3 top-2 flex items-center gap-1.5 rounded-md bg-background/90 px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-sm ring-1 ring-border">
-          {!selectable && <Ban className="h-3.5 w-3.5" />}
-          {selectable ? label : localize('{{label}} · not editable', { label })}
-        </span>
-      </div>
-    </div>
-  );
-}
 import type {
   AuthState,
   DerivAccount,
@@ -67,25 +25,15 @@ import type {
   ProposalInfo,
   BuyResult,
   DerivWS,
+  Tick,
 } from '@deriv/core';
-import type { Direction, DurationSelectUnit, DurationOption } from '../lib/types';
-import type { UseSmartChartsApiReturn } from '@/hooks/use-smartcharts-api';
-import type { SmartChartChartData } from '@/hooks/use-smartchart-chart-data';
-import type { OpenPosition } from '../lib/types';
+import type { Direction, DurationSelectUnit, DurationOption, OpenPosition } from '../lib/types';
+import type { RiseFallAppConfig } from '../lib/app-config';
+import { cn } from '@/lib/utils';
 
-const RiseFallChart = dynamic(() => import('./rise-fall-chart').then(module => module.RiseFallChart), {
-  ssr: false,
-  loading: () => (
-    <div className="h-full w-full animate-pulse rounded-md border border-border/50 dark:border-white/[0.08] bg-muted/30" />
-  ),
-});
-
-// Edit-mode stand-in for the login prompt's auth handlers — same rule as the
-// header: no OAuth navigation out of the editor.
-const noopAsyncAuth = async () => {};
+const MOBILE_BREAKPOINT = 768;
 
 export interface RiseFallViewProps {
-  // Auth
   authState: AuthState;
   accounts: DerivAccount[];
   activeAccount: DerivAccount | null;
@@ -94,22 +42,18 @@ export interface RiseFallViewProps {
   onLogout: () => void;
   onSwitchAccount: (accountId: string) => Promise<void>;
 
-  // Connection / loading
   ws: DerivWS | null;
   isConnected: boolean;
   isLoading: boolean;
   error: string | null;
 
-  // Market data
   symbols: ActiveSymbol[];
   activeSymbol: ActiveSymbol | null;
   selectSymbol: (symbol: string) => void;
-  /** Recent price window + pip size for the active symbol — powers the
-   *  Symbol Selector's movement indicator when the chart is hidden. */
   prices?: number[];
+  currentTick?: Tick | null;
   pipSize?: number;
 
-  // Trade controls
   direction: Direction;
   setDirection: (direction: Direction) => void;
   allowEquals: boolean;
@@ -132,44 +76,18 @@ export interface RiseFallViewProps {
   buyError: string | null;
   clearBuyResult: () => void;
 
-  // Positions
   openPositions: OpenPosition[];
   sellContract: (contractId: number, bidPrice: string) => Promise<void>;
   sellingId: number | null;
 
-  // Chart data (elevated to page so preview can inject frozen mocks)
-  chartData: SmartChartChartData | undefined;
-  getQuotes: UseSmartChartsApiReturn['getQuotes'];
-  subscribeQuotes: UseSmartChartsApiReturn['subscribeQuotes'];
-  unsubscribeQuotes: UseSmartChartsApiReturn['unsubscribeQuotes'];
-  /** Passed to SmartChart. Set to false for a frozen preview. Defaults to true. */
-  isLive?: boolean;
-  /**
-   * Unix epoch (seconds) to freeze the chart at. When set, SmartCharts renders
-   * a static historical snapshot and never sets up a live subscription.
-   */
-  endEpoch?: number;
-
-  // Branding (used by preview route; no-op in the real app)
   logoSrc?: string;
   appName?: string;
   showAppName?: boolean;
-
-  /**
-   * No-code config. When provided, the trade controls render in configurable
-   * styles/order (ConfigurableTradeControls). When omitted, the standard
-   * TradeControls render unchanged.
-   */
   appConfig?: RiseFallAppConfig;
-  /** Edit mode — components become selectable (click opens their accordion). */
   editMode?: boolean;
-  /** Called when an editable component is clicked (e.g. "chart", "stake"). */
   onSelect?: (key: string) => void;
-  /** Currently selected component (highlighted). */
   selectedKey?: string | null;
-  /** Rearrange mode — drag blocks in the phone to reorder the layout. */
   rearrangeMode?: boolean;
-  /** Called with the new block order after a drag-drop reorder. */
   onReorder?: (order: RiseFallAppConfig['order']) => void;
 }
 
@@ -181,210 +99,221 @@ export function RiseFallView({
   onSignUp,
   onLogout,
   onSwitchAccount,
-  ws,
   isConnected,
-  isLoading,
   error,
   symbols,
   activeSymbol,
   selectSymbol,
-  prices,
-  pipSize,
+  prices = [],
+  currentTick = null,
+  pipSize = 2,
   direction,
   setDirection,
-  allowEquals,
-  setAllowEquals,
   stake,
   setStake,
   duration,
   setDuration,
-  durationOptions,
-  durationUnit,
-  setDurationUnit,
-  endDate,
-  setEndDate,
-  endTime,
-  setEndTime,
   proposal,
   buyContract,
   isBuying,
   buyResult,
-  buyError,
   clearBuyResult,
-  openPositions,
-  chartData,
-  getQuotes,
-  subscribeQuotes,
-  unsubscribeQuotes,
-  isLive,
-  endEpoch,
   logoSrc,
   appName,
   showAppName,
-  appConfig,
-  editMode,
-  onSelect,
-  selectedKey,
-  rearrangeMode,
-  onReorder,
 }: RiseFallViewProps) {
-  const { localize } = useAppTranslations();
-  const isMobile = useIsMobile();
-  const chartHidden = appConfig?.chart?.hidden ?? false;
-  // Pinning is a mobile affordance: on desktop the controls card grows to fit,
-  // so the Buy button is never scroll-clipped and a viewport-wide bar under a
-  // 400px column would look detached.
-  const pinBuy = !!appConfig?.buy?.pinned && isMobile;
-  // With Buy unpinned the footer still has to sit at the end of the mobile
-  // column — and a `fixed` footer makes that column reserve clearance for it.
-  // That reservation was a guess (`pb-28`, 112px) for a footer that measures
-  // 40px, leaving 72px of dead space under the Buy button at the bottom of the
-  // scroll. Rendering it in flow, exactly as PinnedBuyBar does, ends the column
-  // where the footer begins and removes the number to guess.
-  //
-  // Note what this does NOT depend on: `buy.pinned`. Every no-code mobile
-  // render gets the in-flow band, so an existing unpinned project also moves
-  // off the translucent `fixed` footer on its next redeploy. That is deliberate
-  // — it is the dead-space fix — but it means the backward-compatibility rule
-  // covers Buy's PLACEMENT, not the footer treatment: a pre-existing project
-  // keeps Buy scrolling in the column, while its footer becomes the opaque
-  // bordered band. A footer that moved after a redeploy is expected here, not a
-  // regression.
-  const inFlowFooter = !!appConfig && isMobile;
-  const contractMarkers = useContractMarkers(openPositions, activeSymbol?.underlying_symbol, isMobile);
+  const [showSplash, setShowSplash] = useState(true);
   const [showLoginPrompt, setShowLoginPrompt] = useState(false);
+  const [isMobileScreen, setIsMobileScreen] = useState<boolean | null>(null);
+  const [forceMobile, setForceMobile] = useState(false);
 
-  // Logged-out Buy opens the login/sign-up prompt instead of sending a buy that
-  // would fail with a "Purchase Failed" toast. One gate covers every Buy
-  // surface (standard, configurable, pinned). Edit mode stays inert — the
-  // editor owns Buy clicks there, and its auth actions are already no-ops.
-  const handleBuy = useCallback(async () => {
-    if (editMode) return;
-    // Mid-OAuth (the ?code= callback) the header already shows a login in
-    // progress — don't stack a "please log in" prompt on top of it.
-    if (authState === 'authenticating') return;
+  // Auto Bot Settings State
+  const [isBotRunning, setIsBotRunning] = useState(false);
+  const [botStrategy, setBotStrategy] = useState<'rise' | 'fall' | 'alternate'>('rise');
+  const [targetProfit, setTargetProfit] = useState('50');
+  const [stopLoss, setStopLoss] = useState('50');
+  const [useMartingale, setUseMartingale] = useState(true);
+  const [martingaleFactor, setMartingaleFactor] = useState('2');
+  const [botLogs, setBotLogs] = useState<Array<{ id: string; time: string; text: string; type: 'info' | 'win' | 'loss' }>>([]);
+  const [totalBotProfit, setTotalBotProfit] = useState(0);
+  const [tradesCount, setTradesCount] = useState({ wins: 0, losses: 0 });
+
+  const currentStakeRef = useRef(stake);
+  useEffect(() => {
+    currentStakeRef.current = stake;
+  }, [stake]);
+
+  // Splash screen timer (6 seconds)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setShowSplash(false);
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Mobile-only screen detector
+  useEffect(() => {
+    const checkWidth = () => {
+      setIsMobileScreen(window.innerWidth < MOBILE_BREAKPOINT);
+    };
+    checkWidth();
+    window.addEventListener('resize', checkWidth);
+    return () => window.removeEventListener('resize', checkWidth);
+  }, []);
+
+  const addLog = useCallback((text: string, type: 'info' | 'win' | 'loss' = 'info') => {
+    const time = new Date().toLocaleTimeString();
+    setBotLogs(prev => [{ id: Math.random().toString(), time, text, type }, ...prev.slice(0, 19)]);
+  }, []);
+
+  // Auto Bot Trading Loop effect
+  useEffect(() => {
+    if (!isBotRunning || showSplash) return;
+
     if (authState !== 'authenticated') {
+      setIsBotRunning(false);
       setShowLoginPrompt(true);
       return;
     }
-    await buyContract();
-  }, [editMode, authState, buyContract]);
 
-  // In edit mode, login/sign-up/account actions are inert (no OAuth navigation
-  // out of the editor) — only the theme toggle stays interactive.
-  const headerEl = useMemo(() => {
-    const noop = () => {};
-    const noopAsync = async () => {};
+    let active = true;
+    const runBotCycle = async () => {
+      if (!active || !isBotRunning) return;
+
+      const tp = parseFloat(targetProfit) || 999999;
+      const sl = parseFloat(stopLoss) || 999999;
+      if (totalBotProfit >= tp) {
+        setIsBotRunning(false);
+        addLog(`Target Profit of $${tp} reached! Bot stopped.`, 'win');
+        toast.success('Target Profit Reached!');
+        return;
+      }
+      if (totalBotProfit <= -sl) {
+        setIsBotRunning(false);
+        addLog(`Stop Loss of $${sl} hit! Bot stopped.`, 'loss');
+        toast.error('Stop Loss Hit!');
+        return;
+      }
+
+      if (proposal && !isBuying && isConnected) {
+        try {
+          addLog(`Executing Auto Trade (${direction}) with stake $${stake}...`, 'info');
+          await buyContract();
+        } catch (err) {
+          addLog(`Trade execution error: ${err instanceof Error ? err.message : 'Unknown'}`, 'loss');
+        }
+      }
+    };
+
+    const timer = setTimeout(runBotCycle, 3000);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [isBotRunning, showSplash, proposal, isBuying, isConnected, authState, totalBotProfit, targetProfit, stopLoss, direction, stake, buyContract, addLog]);
+
+  // Track buy result for bot stats
+  useEffect(() => {
+    if (buyResult) {
+      const profit = buyResult.payout - buyResult.buyPrice;
+      const won = profit > 0;
+      setTotalBotProfit(prev => prev + profit);
+      setTradesCount(prev => ({
+        wins: prev.wins + (won ? 1 : 0),
+        losses: prev.losses + (won ? 0 : 1),
+      }));
+      addLog(`Trade resulted in $${profit.toFixed(2)} (${won ? 'WIN' : 'LOSS'})`, won ? 'win' : 'loss');
+
+      if (useMartingale && !won) {
+        const currentNum = parseFloat(stake) || 10;
+        const factor = parseFloat(martingaleFactor) || 2;
+        const nextStake = (currentNum * factor).toFixed(2);
+        setStake(nextStake);
+        addLog(`Martingale applied: Stake increased to $${nextStake}`, 'info');
+      } else if (useMartingale && won) {
+        setStake('10');
+      }
+      clearBuyResult();
+    }
+  }, [buyResult, useMartingale, martingaleFactor, stake, clearBuyResult, addLog, setStake]);
+
+  // 6-Second Splash Screen
+  if (showSplash) {
+    const resolvedAppName = appName?.trim() || process.env.NEXT_PUBLIC_DERIV_APP_NAME?.trim() || 'G-squad Bot';
     return (
-      <Header
-        authState={authState}
-        accounts={accounts}
-        activeAccount={activeAccount}
-        onLogin={editMode ? noopAsync : onLogin}
-        onSignUp={editMode ? noopAsync : onSignUp}
-        onLogout={editMode ? noop : onLogout}
-        onSwitchAccount={editMode ? noopAsync : onSwitchAccount}
-        logoSrc={logoSrc}
-        appName={appName}
-        showAppName={showAppName}
-        actions={<ThemeToggle />}
-      />
-    );
-  }, [
-    authState,
-    accounts,
-    activeAccount,
-    editMode,
-    onLogin,
-    onSignUp,
-    onLogout,
-    onSwitchAccount,
-    logoSrc,
-    appName,
-    showAppName,
-  ]);
-
-  // The chart + symbol block. Used in the standard 2-column layout (left column)
-  // and as a reorderable block in the no-code layout. When the chart is hidden,
-  // the SmartChart is NOT mounted at all (so nothing bleeds through) and a
-  // standalone Symbol Selector takes its place so users can still switch markets.
-  const chartBlock = useMemo(
-    () =>
-      chartHidden ? (
-        <div className="rf-chart-hidden relative">
-          <div className={editMode ? 'pointer-events-none select-none' : ''}>
-            <SymbolSelector
-              symbols={symbols}
-              activeSymbol={activeSymbol}
-              onSymbolChange={selectSymbol}
-              prices={prices}
-              pipSize={pipSize}
-            />
-          </div>
-          {editMode && !rearrangeMode && (
-            <FixedZone label={localize('Symbol picker')} style={{ top: 0, bottom: 0 }} />
-          )}
-        </div>
-      ) : (
-        <div className="relative max-lg:h-[45dvh] lg:h-[min(33.6rem,66vh)] lg:min-h-[384px]">
-          <div className={`h-full ${editMode ? 'pointer-events-none select-none' : ''}`}>
-            {chartData ? (
-              <RiseFallChart
-                symbolKey="rise-fall-chart"
-                symbol={activeSymbol?.underlying_symbol}
-                isConnectionOpened={isConnected}
-                isMobile={isMobile}
-                chartData={chartData}
-                getQuotes={getQuotes}
-                subscribeQuotes={subscribeQuotes}
-                unsubscribeQuotes={unsubscribeQuotes}
-                onSymbolChange={selectSymbol}
-                isLive={isLive}
-                endEpoch={endEpoch}
-                contractsArray={contractMarkers}
-              />
+      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background text-foreground p-6 select-none animate-in fade-in duration-500 max-w-md mx-auto">
+        <div className="flex flex-col items-center space-y-6 max-w-xs text-center">
+          <div className="w-28 h-28 rounded-3xl bg-primary/10 border-2 border-primary/20 flex items-center justify-center shadow-2xl overflow-hidden p-3">
+            {logoSrc ? (
+              <img src={logoSrc} alt="App Logo" className="w-full h-full object-contain" />
             ) : (
-              <Skeleton className="h-full w-full rounded-md" />
+              <span className="text-5xl font-extrabold text-primary">G</span>
             )}
           </div>
-
-          {editMode && !rearrangeMode && (
-            <>
-              <FixedZone label={localize('Symbol picker')} style={{ top: 0, height: 54 }} />
-              <FixedZone label={localize('Chart')} style={{ top: 54, bottom: 0 }} />
-            </>
-          )}
+          <div className="space-y-2">
+            <h1 className="text-2xl font-black tracking-tight">{resolvedAppName}</h1>
+            <p className="text-xs text-muted-foreground font-medium">Advanced Automated Deriv Trading Engine</p>
+          </div>
+          <div className="w-48 h-1.5 bg-muted rounded-full overflow-hidden relative">
+            <div className="absolute inset-0 bg-primary animate-[pulse_1s_infinite]" />
+          </div>
+          <button
+            onClick={() => setShowSplash(false)}
+            className="text-xs text-muted-foreground hover:text-foreground underline pt-2"
+          >
+            Skip Splash
+          </button>
         </div>
-      ),
-    [
-      chartHidden,
-      symbols,
-      prices,
-      pipSize,
-      editMode,
-      chartData,
-      activeSymbol,
-      isConnected,
-      isMobile,
-      getQuotes,
-      subscribeQuotes,
-      unsubscribeQuotes,
-      selectSymbol,
-      isLive,
-      endEpoch,
-      contractMarkers,
-      rearrangeMode,
-      localize,
-    ]
-  );
+      </div>
+    );
+  }
+
+  if (isMobileScreen === null) {
+    return (
+      <div className="min-h-screen w-full flex items-center justify-center bg-background">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!isMobileScreen && !forceMobile) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Card className="max-w-md w-full text-center shadow-lg border-border">
+          <CardHeader className="space-y-3">
+            <div className="mx-auto w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+              <Smartphone className="w-7 h-7" />
+            </div>
+            <CardTitle className="text-xl font-bold">Mobile Device Only</CardTitle>
+            <CardDescription className="text-sm text-muted-foreground">
+              G-squad Auto Trading Bot is designed and restricted exclusively for mobile smartphone devices.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="p-3 rounded-lg bg-muted/50 text-xs text-muted-foreground flex items-center gap-2 justify-center">
+              <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0" />
+              <span>Please open this app on your mobile phone (&lt; 768px width).</span>
+            </div>
+            <Button
+              className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
+              onClick={() => setForceMobile(true)}
+            >
+              Force View in Mobile Mode (Testing)
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (error) {
     return (
-      <main className="flex flex-col bg-background items-center justify-center px-4 min-h-dvh">
-        <Card className="max-w-md w-full">
+      <main className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Card className="max-w-md w-full border-destructive/50 bg-card shadow-2xl">
           <CardHeader>
-            <CardTitle className="text-destructive">
-              <Localize i18n_default_text="Connection Error" />
+            <CardTitle className="text-destructive flex items-center gap-2">
+              <Shield className="w-5 h-5" />
+              <span>Connection Error</span>
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -395,193 +324,230 @@ export function RiseFallView({
     );
   }
 
-  // The configurable controls. `withChart` includes the chart as a reorderable
-  // block in the single column (mobile); on desktop the chart is its own column,
-  // so it's omitted here.
-  const renderConfigurable = (withChart: boolean) =>
-    appConfig ? (
-      <ConfigurableTradeControls
-        config={appConfig}
-        chartSlot={withChart ? chartBlock : undefined}
-        direction={direction}
-        onDirectionChange={setDirection}
-        allowEquals={allowEquals}
-        onAllowEqualsChange={setAllowEquals}
-        isConnected={isConnected}
-        stake={stake}
-        onStakeChange={setStake}
-        duration={duration}
-        onDurationChange={setDuration}
-        durationOptions={durationOptions}
-        durationUnit={durationUnit}
-        onDurationUnitChange={setDurationUnit}
-        endDate={endDate}
-        onEndDateChange={setEndDate}
-        endTime={endTime}
-        onEndTimeChange={setEndTime}
-        ws={ws}
-        activeSymbol={activeSymbol}
-        proposal={proposal}
-        onBuy={handleBuy}
-        isBuying={isBuying}
-        buyResult={buyResult}
-        buyError={buyError}
-        onClearBuyResult={clearBuyResult}
-        isAuthenticated={authState === 'authenticated'}
-        editMode={editMode}
-        onSelect={onSelect}
-        selectedKey={selectedKey}
-        rearrangeMode={rearrangeMode}
-        onReorder={onReorder}
-        pinBuy={pinBuy}
-      />
-    ) : null;
-
   return (
-    <main
-      className={`flex flex-col max-lg:h-dvh lg:overflow-visible ${
-        editMode ? 'bg-muted/50' : 'bg-background'
-      }`}
-    >
-      {editMode ? (
-        <div className="group/hdr sticky top-0 z-50">
-          {headerEl}
-          {/* Hover hint: a ring + a LEFT-aligned chip so it never covers the
-              right-side theme toggle (which stays usable). pointer-events-none
-              so nothing here blocks clicks. */}
-          <div className="pointer-events-none absolute inset-0 z-[60] opacity-0 ring-2 ring-inset ring-muted-foreground/25 transition-opacity group-hover/hdr:opacity-100">
-            <span className="absolute left-3 top-1/2 flex -translate-y-1/2 items-center gap-1.5 rounded-md bg-background/90 px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-sm ring-1 ring-border">
-              <Ban className="h-3.5 w-3.5" />
-              <Localize i18n_default_text="Not editable" />
-            </span>
-          </div>
-        </div>
-      ) : (
-        headerEl
-      )}
+    <div className="min-h-screen flex flex-col bg-background text-foreground selection:bg-primary/20 max-w-md mx-auto w-full border-x border-border/40 shadow-2xl">
+      <Header
+        authState={authState}
+        accounts={accounts}
+        activeAccount={activeAccount}
+        onLogin={onLogin}
+        onSignUp={onSignUp}
+        onLogout={onLogout}
+        onSwitchAccount={onSwitchAccount}
+        logoSrc={logoSrc}
+        appName={appName}
+        showAppName={showAppName}
+        actions={<ThemeToggle />}
+      />
 
-      {appConfig ? (
-        isMobile ? (
-          /* No-code mobile layout: a single, reorderable column of blocks. The
-             chart + symbol dropdown is one block (chartSlot); controls follow
-             the configured order. */
-          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
-            <div className="mx-auto flex w-full max-w-md flex-col gap-3 px-3 py-3">
-              {isLoading ? <Skeleton className="h-48 w-full rounded-xl" /> : renderConfigurable(true)}
+      <main className="flex-1 px-4 py-4 space-y-4 pb-20">
+        <div className={cn(
+          'p-4 rounded-2xl border flex items-center justify-between shadow-lg transition-all',
+          isBotRunning ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-600 dark:text-emerald-400' : 'bg-card border-border/60'
+        )}>
+          <div className="flex items-center gap-3">
+            <div className={cn('w-10 h-10 rounded-xl flex items-center justify-center font-bold', isBotRunning ? 'bg-emerald-500 text-white animate-pulse' : 'bg-muted text-muted-foreground')}>
+              <Bot className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Auto Bot Status</p>
+              <p className="text-base font-bold">{isBotRunning ? 'Running & Trading...' : 'Bot Stopped'}</p>
             </div>
           </div>
-        ) : chartHidden ? (
-          /* No-code desktop, chart OFF: a single centered column (symbol picker
-             + controls stacked) at the controls' width — no wide empty chart
-             column, and the height grows to fit its content (no inner scroll). */
-          <div className="mx-auto flex w-full max-w-md flex-col gap-3 px-4 py-4">
-            {isLoading ? (
-              <Skeleton className="h-96 w-full rounded-xl" />
-            ) : (
-              renderConfigurable(true)
+          <Button
+            size="sm"
+            onClick={() => {
+              if (!isBotRunning && authState !== 'authenticated') {
+                setShowLoginPrompt(true);
+                return;
+              }
+              setIsBotRunning(!isBotRunning);
+              addLog(isBotRunning ? 'Bot stopped by user' : 'Bot started successfully', 'info');
+            }}
+            className={cn(
+              'rounded-full px-5 font-bold shadow-md',
+              isBotRunning ? 'bg-destructive hover:bg-destructive/90 text-destructive-foreground' : 'bg-primary hover:bg-primary/90 text-primary-foreground'
             )}
-          </div>
-        ) : (
-          /* No-code desktop, chart ON: 2-column (chart left, controls card
-             right). The card grows to its content height (no fixed height /
-             inner scrollbar) — desktop has the vertical space. */
-          <div className="flex w-full max-w-7xl mx-auto flex-col px-4 py-4 gap-3">
-            <div className="grid grid-cols-[1fr_400px] gap-4 items-start">
-              <div>{chartBlock}</div>
-              {isLoading ? (
-                <Skeleton className="h-[min(33.6rem,66vh)] min-h-[384px] w-full rounded-xl" />
-              ) : (
-                <Card>
-                  <CardContent className="pt-4">{renderConfigurable(false)}</CardContent>
-                </Card>
-              )}
-            </div>
-          </div>
-        )
-      ) : (
-        /* Standard layout (unchanged): 2-column chart + controls card. */
-        <div className="flex w-full max-w-7xl mx-auto flex-col max-lg:px-0 max-lg:py-0 px-3 py-2 sm:px-4 sm:py-4 gap-2 sm:gap-3 max-lg:flex-1 max-lg:min-h-0 max-lg:overflow-hidden lg:flex-none lg:overflow-visible">
-          <div className="max-lg:flex max-lg:flex-col max-lg:flex-1 max-lg:min-h-0 lg:grid lg:grid-cols-[1fr_400px] lg:gap-4">
-            <div className="max-lg:shrink-0 flex flex-col gap-2 max-lg:px-3 max-lg:pb-2 pt-2 lg:py-0">
-              {chartBlock}
-            </div>
-            <div className="max-lg:flex-1 max-lg:min-h-0 max-lg:overflow-y-auto max-lg:overscroll-contain max-lg:px-3 max-lg:border-t max-lg:border-border max-lg:pt-3 max-lg:pb-28 lg:pt-0 flex flex-col gap-3">
-              {isLoading ? (
-                <Skeleton className="lg:h-[min(33.6rem,66vh)] lg:min-h-[384px] max-lg:h-48 w-full rounded-xl" />
-              ) : (
-                <Card className="lg:h-[min(33.6rem,66vh)] lg:min-h-[384px] lg:overflow-y-auto">
-                  <CardContent className="pt-4">
-                    <TradeControls
-                      direction={direction}
-                      onDirectionChange={setDirection}
-                      allowEquals={allowEquals}
-                      onAllowEqualsChange={setAllowEquals}
-                      isConnected={isConnected}
-                      stake={stake}
-                      onStakeChange={setStake}
-                      duration={duration}
-                      onDurationChange={setDuration}
-                      durationOptions={durationOptions}
-                      durationUnit={durationUnit}
-                      onDurationUnitChange={setDurationUnit}
-                      endDate={endDate}
-                      onEndDateChange={setEndDate}
-                      endTime={endTime}
-                      onEndTimeChange={setEndTime}
-                      ws={ws}
-                      activeSymbol={activeSymbol}
-                      proposal={proposal}
-                      onBuy={handleBuy}
-                      isBuying={isBuying}
-                      buyResult={buyResult}
-                      buyError={buyError}
-                      onClearBuyResult={clearBuyResult}
-                      isAuthenticated={authState === 'authenticated'}
-                    />
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          </div>
+          >
+            {isBotRunning ? (
+              <span className="flex items-center gap-1.5"><Square className="w-3.5 h-3.5 fill-current" /> Stop</span>
+            ) : (
+              <span className="flex items-center gap-1.5"><Play className="w-3.5 h-3.5 fill-current" /> Start Bot</span>
+            )}
+          </Button>
         </div>
-      )}
 
-      {pinBuy ? (
-        <PinnedBuyBar
-          editMode={editMode}
-          rearrangeMode={rearrangeMode}
-          selected={selectedKey === 'buy'}
-          onSelect={() => onSelect?.('buy')}
-          label={localize('Buy button')}
-        >
-          <ConfigurableBuyButton
-            variant={appConfig!.styles.buy}
-            isConnected={isConnected}
-            proposal={proposal}
-            onBuy={handleBuy}
-            isBuying={isBuying}
-          />
-        </PinnedBuyBar>
-      ) : inFlowFooter ? (
-        /* Unpinned mobile: the same band the pinned bar ends in, minus the Buy
-           button — in flow at the end of the h-dvh column, so the scroll area
-           ends where it begins and nothing reserves clearance for it. Sharing
-           the band is what keeps the footer from moving when the pin toggles. */
-        <FooterBar />
-      ) : (
-        /* Fixed footer — desktop and the standard layout, which scroll the
-           document rather than an inner column. */
-        <div className="fixed bottom-0 left-0 right-0 py-2 text-center bg-background/80 backdrop-blur-sm">
-          <Footer />
+        <Card className="border-border/60 bg-card/80 backdrop-blur-xl rounded-2xl shadow-sm">
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-muted-foreground">Market Asset</span>
+              <span className={cn('text-xs font-bold px-2 py-0.5 rounded-full', isConnected ? 'bg-emerald-500/10 text-emerald-500' : 'bg-destructive/10 text-destructive')}>
+                {isConnected ? 'Live' : 'Connecting'}
+              </span>
+            </div>
+            <SymbolSelector
+              symbols={symbols}
+              activeSymbol={activeSymbol}
+              onSymbolChange={selectSymbol}
+              prices={prices}
+              pipSize={pipSize}
+            />
+            <div className="pt-2 border-t border-border/40">
+              <CurrentPriceDisplay
+                tick={currentTick}
+                prices={prices}
+                activeSymbol={activeSymbol}
+                pipSize={pipSize}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="grid grid-cols-3 gap-2.5">
+          <div className="p-3 rounded-xl bg-card border border-border/60 text-center shadow-sm">
+            <p className="text-[10px] uppercase font-semibold text-muted-foreground">Total P/L</p>
+            <p className={cn('text-sm font-mono font-bold mt-0.5', totalBotProfit >= 0 ? 'text-emerald-500' : 'text-destructive')}>
+              {totalBotProfit >= 0 ? '+' : ''}${totalBotProfit.toFixed(2)}
+            </p>
+          </div>
+          <div className="p-3 rounded-xl bg-card border border-border/60 text-center shadow-sm">
+            <p className="text-[10px] uppercase font-semibold text-muted-foreground">Wins</p>
+            <p className="text-sm font-mono font-bold mt-0.5 text-emerald-500">{tradesCount.wins}</p>
+          </div>
+          <div className="p-3 rounded-xl bg-card border border-border/60 text-center shadow-sm">
+            <p className="text-[10px] uppercase font-semibold text-muted-foreground">Losses</p>
+            <p className="text-sm font-mono font-bold mt-0.5 text-destructive">{tradesCount.losses}</p>
+          </div>
         </div>
-      )}
+
+        <Card className="border-border/60 bg-card/90 rounded-2xl shadow-sm">
+          <CardHeader className="pb-3 border-b border-border/40">
+            <CardTitle className="text-sm font-bold flex items-center gap-2">
+              <Activity className="w-4 h-4 text-primary" />
+              <span>Bot Strategy & Risk Management</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-4 space-y-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground font-medium">Trade Direction</Label>
+              <Select
+                value={botStrategy}
+                onValueChange={(v: 'rise' | 'fall' | 'alternate') => {
+                  setBotStrategy(v);
+                  if (v === 'rise') setDirection('CALL');
+                  if (v === 'fall') setDirection('PUT');
+                }}
+              >
+                <SelectTrigger className="h-10 bg-muted/30">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="rise">Always Rise (CALL)</SelectItem>
+                  <SelectItem value="fall">Always Fall (PUT)</SelectItem>
+                  <SelectItem value="alternate">Smart Alternate</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground font-medium">Initial Stake ($)</Label>
+                <Input
+                  type="number"
+                  value={stake}
+                  onChange={(e) => setStake(e.target.value)}
+                  min={0.35}
+                  step="1"
+                  className="h-10 font-mono font-bold bg-muted/30"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground font-medium">Duration (Ticks)</Label>
+                <Input
+                  type="number"
+                  value={duration}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10);
+                    if (!isNaN(val)) setDuration(val);
+                  }}
+                  min={1}
+                  max={10}
+                  className="h-10 font-mono font-bold bg-muted/30"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground font-medium">Target Profit ($)</Label>
+                <Input
+                  type="number"
+                  value={targetProfit}
+                  onChange={(e) => setTargetProfit(e.target.value)}
+                  className="h-10 font-mono font-bold bg-muted/30"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground font-medium">Stop Loss ($)</Label>
+                <Input
+                  type="number"
+                  value={stopLoss}
+                  onChange={(e) => setStopLoss(e.target.value)}
+                  className="h-10 font-mono font-bold bg-muted/30"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between p-3 rounded-xl bg-muted/30 border border-border/40">
+              <div className="space-y-0.5">
+                <Label className="text-xs font-semibold cursor-pointer">Martingale Recovery</Label>
+                <p className="text-[10px] text-muted-foreground">Multiply stake on loss</p>
+              </div>
+              <Switch
+                checked={useMartingale}
+                onCheckedChange={setUseMartingale}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/60 bg-card rounded-2xl shadow-sm">
+          <CardHeader className="pb-2 border-b border-border/40">
+            <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              Live Bot Activity Logs
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-3">
+            <div className="h-36 overflow-y-auto space-y-1.5 font-mono text-[11px]">
+              {botLogs.length === 0 ? (
+                <p className="text-muted-foreground text-center py-8">Bot is idle. Tap Start Bot above.</p>
+              ) : (
+                botLogs.map((log) => (
+                  <div key={log.id} className={cn(
+                    'p-1.5 rounded flex items-center justify-between',
+                    log.type === 'win' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' :
+                    log.type === 'loss' ? 'bg-destructive/10 text-destructive' : 'bg-muted/40 text-muted-foreground'
+                  )}>
+                    <span className="truncate pr-2">{log.text}</span>
+                    <span className="shrink-0 text-[10px] opacity-70">{log.time}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </main>
+
+      <footer className="mt-auto py-3 text-center border-t border-border/40 bg-card/60 backdrop-blur-sm">
+        <Footer />
+      </footer>
 
       <LoginPromptDialog
         open={showLoginPrompt}
         onOpenChange={setShowLoginPrompt}
-        onLogin={editMode ? noopAsyncAuth : onLogin}
-        onSignUp={editMode ? noopAsyncAuth : onSignUp}
+        onLogin={onLogin}
+        onSignUp={onSignUp}
       />
-    </main>
+    </div>
   );
 }

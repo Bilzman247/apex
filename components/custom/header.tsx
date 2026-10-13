@@ -379,16 +379,15 @@ export function Header({
             onSignUp={onSignUp}
           />
         </div>
-        <DialogPrimitive.Trigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="lg:hidden shrink-0"
-            aria-label={localize('Your preferences')}
-          >
-            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-          </Button>
-        </DialogPrimitive.Trigger>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="lg:hidden shrink-0"
+          aria-label={localize('Your preferences')}
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+        >
+          {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+        </Button>
       </div>
       </header>
   );

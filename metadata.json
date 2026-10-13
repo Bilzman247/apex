@@ -1,0 +1,8 @@
+{
+  "name": "Apex Trading App",
+  "description": "A white-label trading application powered by Deriv",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

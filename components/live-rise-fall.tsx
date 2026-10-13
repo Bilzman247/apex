@@ -7,8 +7,6 @@
  * editor (/edit) so the editor preview is fully live.
  */
 
-import { useSmartChartsApi } from '@/hooks/use-smartcharts-api';
-import { useSmartChartChartData } from '@/hooks/use-smartchart-chart-data';
 import { useRiseFallTrading } from '../hooks/use-rise-fall-trading';
 import { useDerivWSContext } from '@/components/custom/deriv-ws-provider';
 import { useLogoSrc } from '@/components/custom/logo-src-provider';
@@ -50,9 +48,6 @@ export function LiveRiseFall({
     onAuthWSFailed: logout,
   });
 
-  const { chartData } = useSmartChartChartData(trading.ws, trading.isConnected, trading.symbols);
-  const { getQuotes, subscribeQuotes, unsubscribeQuotes } = useSmartChartsApi(trading.ws);
-
   return (
     <RiseFallView
       authState={authState}
@@ -73,6 +68,7 @@ export function LiveRiseFall({
       activeSymbol={trading.activeSymbol}
       selectSymbol={trading.selectSymbol}
       prices={trading.prices}
+      currentTick={trading.currentTick}
       pipSize={trading.pipSize}
       direction={trading.direction}
       setDirection={trading.setDirection}
@@ -98,10 +94,6 @@ export function LiveRiseFall({
       openPositions={trading.openPositions}
       sellContract={trading.sellContract}
       sellingId={trading.sellingId}
-      chartData={chartData}
-      getQuotes={getQuotes}
-      subscribeQuotes={subscribeQuotes}
-      unsubscribeQuotes={unsubscribeQuotes}
       appConfig={appConfig}
       editMode={editMode}
       onSelect={onSelect}

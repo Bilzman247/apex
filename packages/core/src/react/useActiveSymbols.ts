@@ -20,6 +20,16 @@ function writeSymbolToUrl(symbol: string): void {
   window.history.replaceState(null, '', next);
 }
 
+const INSTANT_FALLBACK_SYMBOLS = [
+  { underlying_symbol: '1HZ100V', underlying_symbol_name: 'Volatility 100 (1s) Index', exchange_is_open: 1, submarket: 'random_index', market: 'synthetic_index', pip_size: 2, is_trading_suspended: 0 },
+  { underlying_symbol: 'R_10', underlying_symbol_name: 'Volatility 10 Index', exchange_is_open: 1, submarket: 'random_index', market: 'synthetic_index', pip_size: 2, is_trading_suspended: 0 },
+  { underlying_symbol: 'R_25', underlying_symbol_name: 'Volatility 25 Index', exchange_is_open: 1, submarket: 'random_index', market: 'synthetic_index', pip_size: 2, is_trading_suspended: 0 },
+  { underlying_symbol: 'R_50', underlying_symbol_name: 'Volatility 50 Index', exchange_is_open: 1, submarket: 'random_index', market: 'synthetic_index', pip_size: 2, is_trading_suspended: 0 },
+  { underlying_symbol: 'R_75', underlying_symbol_name: 'Volatility 75 Index', exchange_is_open: 1, submarket: 'random_index', market: 'synthetic_index', pip_size: 2, is_trading_suspended: 0 },
+  { underlying_symbol: 'R_100', underlying_symbol_name: 'Volatility 100 Index', exchange_is_open: 1, submarket: 'random_index', market: 'synthetic_index', pip_size: 2, is_trading_suspended: 0 },
+  { underlying_symbol: 'frxEURUSD', underlying_symbol_name: 'EUR/USD', exchange_is_open: 1, submarket: 'major_pairs', market: 'forex', pip_size: 5, is_trading_suspended: 0 },
+] as unknown as ActiveSymbol[];
+
 interface UseActiveSymbolsReturn {
   symbols: ActiveSymbol[];
   activeSymbol: ActiveSymbol | null;
@@ -36,46 +46,49 @@ export function useActiveSymbols(
   isConnected: boolean,
   contractTypes: string[]
 ): UseActiveSymbolsReturn {
-  const [symbols, setSymbols] = useState<ActiveSymbol[]>([]);
-  const [activeSymbol, setActiveSymbol] = useState<ActiveSymbol | null>(null);
+  const [symbols, setSymbols] = useState<ActiveSymbol[]>(INSTANT_FALLBACK_SYMBOLS);
+  const [activeSymbol, setActiveSymbol] = useState<ActiveSymbol | null>(INSTANT_FALLBACK_SYMBOLS[0]);
   const [contracts, setContracts] = useState<ContractInfo[]>([]);
-  const [contractsAvailable, setContractsAvailable] = useState(false);
+  const [contractsAvailable, setContractsAvailable] = useState(true);
   const [durationLimits, setDurationLimits] = useState<DurationLimits>({ min: 1, max: 10, unit: 't' });
   const [defaultStake, setDefaultStake] = useState<number>(10);
-  const [isLoading, setIsLoading] = useState(true);
 
   const loadContractsFor = useCallback(async (wsInstance: DerivWS, symbol: ActiveSymbol) => {
-    const response = await wsInstance.send<ContractsForResponse>({
-      contracts_for: symbol.underlying_symbol,
-    });
+    try {
+      const response = await wsInstance.send<ContractsForResponse>({
+        contracts_for: symbol.underlying_symbol,
+      });
 
-    const filtered = response.contracts_for?.available?.filter(
-      (c) => contractTypes.includes(c.contract_type)
-    ) ?? [];
-    setContracts(filtered);
-    setContractsAvailable(filtered.length > 0);
+      const filtered = response.contracts_for?.available?.filter(
+        (c) => contractTypes.includes(c.contract_type)
+      ) ?? [];
+      setContracts(filtered);
+      setContractsAvailable(filtered.length > 0);
 
-    if (filtered.length > 0) {
-      const contract = filtered[0];
-      const minMatch = contract.min_contract_duration.match(/^(\d+)/);
-      const maxMatch = contract.max_contract_duration.match(/^(\d+)/);
-      const unit = contract.min_contract_duration.replace(/^\d+/, '');
-      const min = minMatch ? parseInt(minMatch[1], 10) : 1;
-      const max = maxMatch ? parseInt(maxMatch[1], 10) : 10;
-      setDurationLimits({ min, max, unit });
-      setDefaultStake(contract.default_stake);
+      if (filtered.length > 0) {
+        const contract = filtered[0];
+        const minMatch = contract.min_contract_duration.match(/^(\d+)/);
+        const maxMatch = contract.max_contract_duration.match(/^(\d+)/);
+        const unit = contract.min_contract_duration.replace(/^\d+/, '');
+        const min = minMatch ? parseInt(minMatch[1], 10) : 1;
+        const max = maxMatch ? parseInt(maxMatch[1], 10) : 10;
+        setDurationLimits({ min, max, unit });
+        setDefaultStake(contract.default_stake);
+      }
+    } catch {
+      // Keep defaults if contracts_for fails
     }
   }, [contractTypes]);
 
   const selectSymbol = useCallback((underlyingSymbol: string) => {
-    if (!ws || !isConnected) return;
-
     const symbol = symbols.find((s) => s.underlying_symbol === underlyingSymbol);
     if (!symbol || symbol.underlying_symbol === activeSymbol?.underlying_symbol) return;
 
     setActiveSymbol(symbol);
     writeSymbolToUrl(symbol.underlying_symbol);
-    loadContractsFor(ws, symbol).catch(() => {});
+    if (ws && isConnected) {
+      loadContractsFor(ws, symbol).catch(() => {});
+    }
   }, [ws, isConnected, symbols, activeSymbol, loadContractsFor]);
 
   useEffect(() => {
@@ -84,7 +97,6 @@ export function useActiveSymbols(
 
     async function fetchSymbols() {
       try {
-        setIsLoading(true);
         const response = await ws!.send<{ active_symbols: ActiveSymbol[] }>({
           active_symbols: 'full',
           contract_type: contractTypes,
@@ -92,21 +104,16 @@ export function useActiveSymbols(
         if (disposed) return;
 
         const allSymbols = response.active_symbols;
-        if (!allSymbols || allSymbols.length === 0) {
-          throw new Error('No symbols available');
+        if (allSymbols && allSymbols.length > 0) {
+          setSymbols(allSymbols);
+          const chosen = pickDefaultSymbol(allSymbols, readSymbolFromUrl());
+          setActiveSymbol(chosen);
+          writeSymbolToUrl(chosen.underlying_symbol);
+
+          await loadContractsFor(ws!, chosen);
         }
-
-        setSymbols(allSymbols);
-        const chosen = pickDefaultSymbol(allSymbols, readSymbolFromUrl());
-        setActiveSymbol(chosen);
-        writeSymbolToUrl(chosen.underlying_symbol);
-
-        await loadContractsFor(ws!, chosen);
-        if (disposed) return;
-
-        setIsLoading(false);
       } catch {
-        if (!disposed) setIsLoading(false);
+        // Fallback to instant symbols if live fetch fails
       }
     }
 
@@ -122,6 +129,6 @@ export function useActiveSymbols(
     contractsAvailable,
     durationLimits,
     defaultStake,
-    isLoading,
+    isLoading: false,
   };
 }

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3000 -H 0.0.0.0",
     "build": "next build",
     "start": "next start",
     "copy-smartcharts-assets": "node scripts/copy-smartcharts-assets.js",
@@ -60,8 +60,7 @@
     "tailwindcss-animate": "^1.0.7",
     "undici": "7.29.1",
     "uuid": "11.1.1",
-    "vaul": "^1.1.1",
-    "@deriv-com/smartcharts-champion": "1.10.8"
+    "vaul": "^1.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
